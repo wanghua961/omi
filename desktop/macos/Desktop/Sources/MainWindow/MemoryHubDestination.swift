@@ -3,11 +3,21 @@ import CoreGraphics
 /// Destinations available from the Memory navigation menu.
 enum MemoryHubDestination: Int, CaseIterable, Identifiable {
   static let storageKey = "memoryHubDestination"
-  static let dropdownDestinations: [MemoryHubDestination] = [.conversations, .brainMap]
+
+  /// The order the hub's own switcher reads in: the thing you captured, what Omi kept from it, then
+  /// the map over all of it. Declared here rather than inside the switcher view so it stays a plain
+  /// value a test can read without hopping to the main actor.
+  ///
+  /// `allCases` is *not* this order — its raw values are storage identity and start at `memories`,
+  /// which is where the persisted default lands, not where the row should start.
+  static let switcherOrder: [MemoryHubDestination] = [.activity, .conversations, .memories, .brainMap]
 
   case memories
   case conversations
   case brainMap
+  /// The chronological spine that used to be Home's landing surface — everything captured, in the
+  /// order it happened. Home now lands in the chat; the timeline lives here.
+  case activity
 
   enum Presentation: Equatable {
     case standaloneConversations
@@ -21,6 +31,7 @@ enum MemoryHubDestination: Int, CaseIterable, Identifiable {
     case .memories: return "Memories"
     case .conversations: return "Conversations"
     case .brainMap: return "Brain Map"
+    case .activity: return "Activity"
     }
   }
 
@@ -29,6 +40,7 @@ enum MemoryHubDestination: Int, CaseIterable, Identifiable {
     case .memories: return "brain.head.profile"
     case .conversations: return "text.bubble"
     case .brainMap: return "point.3.connected.trianglepath.dotted"
+    case .activity: return "clock.arrow.circlepath"
     }
   }
 
@@ -67,57 +79,6 @@ enum MemoryHubDestination: Int, CaseIterable, Identifiable {
       return .standaloneConversations
     }
     return .memoryHub
-  }
-}
-
-/// Deterministic interaction state for the Memory dropdown.
-///
-/// The anchor and menu report hover independently so the pointer can cross the
-/// small visual gap without dismissing the menu. Delayed transitions carry a
-/// generation token so stale hover work cannot reopen or close the dropdown.
-struct MemoryDropdownInteractionState: Equatable {
-  enum HoverRegion {
-    case anchor
-    case dropdown
-  }
-
-  struct PendingPresentation: Equatable {
-    let generation: Int
-    let isPresented: Bool
-  }
-
-  private(set) var generation = 0
-  private(set) var isPresented = false
-  private var isAnchorHovered = false
-  private var isDropdownHovered = false
-
-  mutating func hoverChanged(
-    _ isHovering: Bool,
-    in region: HoverRegion
-  ) -> PendingPresentation? {
-    generation += 1
-    switch region {
-    case .anchor: isAnchorHovered = isHovering
-    case .dropdown: isDropdownHovered = isHovering
-    }
-
-    let shouldPresent = isAnchorHovered || isDropdownHovered
-    guard shouldPresent != isPresented else { return nil }
-    return PendingPresentation(generation: generation, isPresented: shouldPresent)
-  }
-
-  @discardableResult
-  mutating func apply(_ pendingPresentation: PendingPresentation) -> Bool {
-    guard generation == pendingPresentation.generation else { return false }
-    isPresented = pendingPresentation.isPresented
-    return true
-  }
-
-  mutating func dismiss() {
-    generation += 1
-    isPresented = false
-    isAnchorHovered = false
-    isDropdownHovered = false
   }
 }
 

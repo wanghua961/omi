@@ -58,6 +58,9 @@ if (
     or migration.get("maxConcurrency") != 1
     or not isinstance(migration.get("soakSeconds"), int)
     or migration["soakSeconds"] < 60
+    or not isinstance(migration.get("retentionSeconds", migration["soakSeconds"]), int)
+    or migration.get("retentionSeconds", migration["soakSeconds"]) < migration["soakSeconds"]
+    or not isinstance(migration.get("drainRunning", False), bool)
 ):
     raise SystemExit("migration manifest is not a canonical explicit development plan")
 print(declared)
@@ -97,7 +100,8 @@ if [[ "$active_generation" != "0" ]]; then
   gcloud storage cp "${active_uri}#${active_generation}" "$previous_uri" --if-generation-match="$previous_generation"
 fi
 
-gcloud storage cp "$manifest_uri" "$active_uri" --if-generation-match="$active_generation"
+gcloud storage cp "$manifest_uri" "$active_uri" \
+  --cache-control='no-store,max-age=0' --if-generation-match="$active_generation"
 activated_generation="$(gcloud storage objects describe "$active_uri" --format='value(generation)')"
 [[ "$activated_generation" =~ ^[0-9]+$ ]]
 gcloud storage cp "${active_uri}#${activated_generation}" "$readback"

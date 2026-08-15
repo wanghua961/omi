@@ -42,6 +42,26 @@ struct ConversationMutationResponse: Decodable {
   let conversation: ServerConversation
 }
 
+/// Durable Cloud Tasks finalization projection returned by
+/// GET /v1/conversations/{id}/finalization.
+struct ConversationFinalizationStatusResponse: Decodable, Equatable {
+  let jobID: String
+  let status: String
+  let terminal: Bool
+  let retryable: Bool
+  let attemptCount: Int
+  let taskRetryCount: Int
+
+  enum CodingKeys: String, CodingKey {
+    case jobID = "job_id"
+    case status
+    case terminal
+    case retryable
+    case attemptCount = "attempt_count"
+    case taskRetryCount = "task_retry_count"
+  }
+}
+
 enum TranscriptPresenceState: Equatable {
   case omittedFromResponse
   case lockedOrRedacted
@@ -368,7 +388,8 @@ struct Structured: Codable, Equatable {
       OmiAPI.ActionItem(
         candidateAction: nil, captureConfidence: nil, captureKind: nil, captureOwner: nil, completed: $0.completed,
         completedAt: nil, concreteDeliverable: nil, conversationId: nil, createdAt: nil, description_: $0.description,
-        dueAt: nil, ownershipConfidence: nil, targetTaskId: $0.targetTaskID, updatedAt: nil)
+        dueAt: nil, ownershipConfidence: nil, sourceSegmentIds: $0.sourceSegmentIDs,
+        targetTaskId: $0.targetTaskID, updatedAt: nil)
     }
     let eventsWire = events.map {
       OmiAPI.Event(
@@ -417,12 +438,20 @@ struct ActionItem: Codable, Identifiable, Equatable {
   /// chat-first archive uses this opaque ID for a typed deep link rather than
   /// inferring a task from the description.
   let targetTaskID: String?
+  let sourceSegmentIDs: [String]
 
-  init(description: String, completed: Bool, deleted: Bool, targetTaskID: String? = nil) {
+  init(
+    description: String,
+    completed: Bool,
+    deleted: Bool,
+    targetTaskID: String? = nil,
+    sourceSegmentIDs: [String] = []
+  ) {
     self.description = description
     self.completed = completed
     self.deleted = deleted
     self.targetTaskID = targetTaskID
+    self.sourceSegmentIDs = sourceSegmentIDs
   }
 
   /// Adapter from the generated wire DTO (OmiAPI.ActionItem). `deleted` is a
@@ -433,6 +462,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
     self.completed = wire.completed ?? false
     self.deleted = false
     self.targetTaskID = wire.targetTaskId
+    self.sourceSegmentIDs = wire.sourceSegmentIds ?? []
   }
 
   init(from decoder: Decoder) throws {
@@ -441,6 +471,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
     self.completed = wire.completed ?? false
     self.deleted = false
     self.targetTaskID = wire.targetTaskId
+    self.sourceSegmentIDs = wire.sourceSegmentIds ?? []
   }
 
   func encode(to encoder: Encoder) throws {
@@ -457,6 +488,7 @@ struct ActionItem: Codable, Identifiable, Equatable {
       description_: description,
       dueAt: nil,
       ownershipConfidence: nil,
+      sourceSegmentIds: sourceSegmentIDs,
       targetTaskId: targetTaskID,
       updatedAt: nil
     )

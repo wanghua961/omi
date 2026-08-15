@@ -8,6 +8,7 @@ from google.cloud.firestore_v1 import FieldFilter, transactional
 from ._client import db, delete_collection_recursive, document_id_from_seed, get_firestore_client
 from database.account_deletion_policy import normalize_account_deletion_status
 from database.account_deletion_transitions import (
+    adopt_legacy_late_agent_vm_cleanup as _adopt_legacy_late_agent_vm_cleanup_txn,
     mark_wipe_completed as _mark_user_deletion_wipe_completed_txn,
     record_late_agent_vm_cleanup as _record_late_agent_vm_cleanup_txn,
 )
@@ -24,7 +25,6 @@ from models.users import (
     LocationContextConsent,
     LocationContextConsentStatus,
     Subscription,
-    PlanLimits,
     PlanType,
     SubscriptionStatus,
 )
@@ -254,15 +254,15 @@ def set_user_cancellation_feedback(uid: str, reason: str, reason_details: Option
 BYOK_HEARTBEAT_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 
-def get_byok_state(uid: str) -> dict:
-    user_ref = db.collection('users').document(uid)
+def get_byok_state(uid: str, *, firestore_client: Any | None = None) -> dict:
+    user_ref = (firestore_client or db).collection('users').document(uid)
     data = user_ref.get().to_dict() or {}
     return data.get('byok', {})
 
 
-def is_byok_active(uid: str) -> bool:
+def is_byok_active(uid: str, *, firestore_client: Any | None = None) -> bool:
     """True if user has a live BYOK activation (heartbeat within TTL)."""
-    state = get_byok_state(uid)
+    state = get_byok_state(uid, firestore_client=firestore_client)
     if not state.get('active'):
         return False
     last_seen = state.get('last_seen_at')
@@ -444,10 +444,21 @@ def mark_user_deletion_wipe_failed(uid: str):
     )
 
 
-def record_late_agent_vm_cleanup(uid: str, vm_name: str, zone: str) -> bool:
+def record_late_agent_vm_cleanup(
+    uid: str,
+    vm_name: str,
+    zone: str,
+    expected_instance_id: str | None = None,
+) -> bool:
     """Persist a late VM only when an admitted deletion owns its cleanup."""
     doc_ref = db.collection('account_deletions').document(uid)
-    return _record_late_agent_vm_cleanup_txn(db.transaction(), doc_ref, vm_name, zone)
+    return _record_late_agent_vm_cleanup_txn(
+        db.transaction(),
+        doc_ref,
+        vm_name,
+        zone,
+        expected_instance_id,
+    )
 
 
 def get_late_agent_vm_cleanup(uid: str) -> dict[str, str] | None:
@@ -461,7 +472,23 @@ def get_late_agent_vm_cleanup(uid: str) -> dict[str, str] | None:
     zone = pending.get('zone')
     if not isinstance(vm_name, str) or not vm_name or not isinstance(zone, str) or not zone:
         return None
-    return {'vmName': vm_name, 'zone': zone}
+    result = {'vmName': vm_name, 'zone': zone}
+    expected_instance_id = pending.get('expectedInstanceId')
+    if expected_instance_id is not None:
+        if (
+            not isinstance(expected_instance_id, str)
+            or not expected_instance_id.isascii()
+            or not expected_instance_id.isdigit()
+        ):
+            raise RuntimeError('late Agent VM cleanup instance identity is malformed')
+        result['expectedInstanceId'] = expected_instance_id
+    return result
+
+
+def adopt_legacy_late_agent_vm_cleanup(uid: str, vm_name: str, zone: str, expected_instance_id: str) -> bool:
+    """CAS-upgrade a pre-instance-ID cleanup record before provider deletion."""
+    doc_ref = db.collection('account_deletions').document(uid)
+    return _adopt_legacy_late_agent_vm_cleanup_txn(db.transaction(), doc_ref, vm_name, zone, expected_instance_id)
 
 
 def clear_late_agent_vm_cleanup(uid: str, vm_name: str) -> None:
@@ -1494,9 +1521,9 @@ def set_user_onboarding_state(uid: str, onboarding_data: dict) -> None:
     user_ref.set({'onboarding': onboarding_data}, merge=True)
 
 
-def get_user_subscription(uid: str) -> Subscription:
+def get_user_subscription(uid: str, *, firestore_client: Any | None = None) -> Subscription:
     """Gets the user's subscription, creating a default free one if it doesn't exist."""
-    user_ref = db.collection('users').document(uid)
+    user_ref = (firestore_client or db).collection('users').document(uid)
     user_doc = user_ref.get(['subscription'])
     if user_doc.exists:
         user_data = user_doc.to_dict()
@@ -1529,9 +1556,9 @@ def get_user_subscription(uid: str) -> Subscription:
     return default_subscription
 
 
-def get_existing_user_subscription(uid: str) -> Optional[Subscription]:
+def get_existing_user_subscription(uid: str, *, firestore_client: Any | None = None) -> Optional[Subscription]:
     """Gets the user's stored subscription without creating a default record."""
-    user_ref = db.collection('users').document(uid)
+    user_ref = (firestore_client or db).collection('users').document(uid)
     user_doc = user_ref.get(['subscription'])
     if not user_doc.exists:
         return None
@@ -1633,7 +1660,9 @@ def set_user_training_data_opt_in(uid: str, status: str):
     )
 
 
-def get_user_valid_subscription(uid: str) -> Optional[Subscription]:
+def get_user_valid_subscription(
+    uid: str, *, firestore_client: Any | None = None, provision: bool = True
+) -> Optional[Subscription]:
     """
     Gets the user's subscription if it is currently valid for use.
 
@@ -1644,8 +1673,17 @@ def get_user_valid_subscription(uid: str) -> Optional[Subscription]:
       they paid for, even after cancelling.
 
     Returns the Subscription object if valid, otherwise None.
+
+    ``provision=False`` never merge-writes a default Free plan. Desktop-backend
+    quota must use that mode against the customer Firestore so a miss cannot
+    stamp ``plan: basic`` onto a paying user.
     """
-    subscription = get_user_subscription(uid)
+    if provision:
+        subscription = get_user_subscription(uid, firestore_client=firestore_client)
+    else:
+        subscription = get_existing_user_subscription(uid, firestore_client=firestore_client)
+        if subscription is None:
+            subscription = get_default_basic_subscription()
 
     # Basic (free) plans are only valid if their status is active.
     if subscription.plan == PlanType.basic:

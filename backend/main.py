@@ -42,6 +42,7 @@ from routers import (
     oauth,
     auth,
     action_items,
+    account_cutover,
     candidates,
     chat_first,
     chat_first_e2e,
@@ -70,6 +71,7 @@ from routers import (
     focus_sessions,
     advice,
     chat_sessions,
+    chat_generation,
     desktop_agent_vm,
     desktop_chat,
     desktop_core,
@@ -149,6 +151,7 @@ app.include_router(auto_model.router)
 app.include_router(conversations.router)
 app.include_router(public_shared_conversation_chat.router)
 app.include_router(action_items.router)
+app.include_router(account_cutover.router)
 app.include_router(candidates.router)
 app.include_router(chat_first.router)
 if is_chat_first_e2e_harness_runtime():
@@ -205,6 +208,7 @@ app.include_router(staged_tasks.router)
 app.include_router(focus_sessions.router)
 app.include_router(advice.router)
 app.include_router(chat_sessions.router)
+app.include_router(chat_generation.router)
 app.include_router(scores.router)
 app.include_router(tts.router)
 app.include_router(memory_admin.router)
